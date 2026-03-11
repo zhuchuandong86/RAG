@@ -28,28 +28,27 @@ def image_to_md_via_vlm(image_path: str) -> str:
         }
         
         # 组装请求体数据（适配主流兼容 OpenAI 的内网 VLM 接口）
+# md_converter.py (修改 image_to_md_via_vlm 函数中的 payload)
         payload = {
-            "model": Config.MODEL_VISION, # 统一使用配置的视觉大模型名称
+            "model": Config.MODEL_VISION, 
             "messages": [
                 {
                     "role": "user",
                     "content": [
                         {
                             "type": "text", 
-                            # 提供核心 Prompt，要求输出干净的 Markdown，特别是表格处理
-                            "text": "提取图片中的文字、表格、标题，使用标准 Markdown 格式输出。不要废话。"
+                            # 🚨 修复 3：强化提示词约束，严禁模型自行编造和输出页码
+                            "text": "提取图片中的文字、表格、标题，使用标准 Markdown 格式输出。严格要求：不要废话，绝不要自行编造、添加或输出任何页码信息（如'第x页'），忽略图片边缘的页脚页眉数字。"
                         },
                         {
                             "type": "image_url",
-                            # 拼接 base64 字符串作为图片数据传入
                             "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
                         }
                     ]
                 }
             ],
-            "temperature": 0.1 # 调低温度保证识别内容的精确性，拒绝模型幻觉
+            "temperature": 0.0 # 将温度调至 0.0，最大程度降低模型幻觉发散的概率
         }
-        
         # 打印正在发起的网络请求信息
         print(f"正在调用 {Config.MODEL_VISION} 接口识别图片...") # 建议商用取消
         # 向统一的内网 API 地址发送 POST 请求，如果你内网聊天和 VLM 地址有细微区别，请微调 URL 路径后缀
