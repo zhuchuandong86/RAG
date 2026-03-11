@@ -72,6 +72,25 @@ def batch_ingest_folder(folder_path: str):
     # 打印入库成功提示
     print(f"=== 批量入库完成！数据已安全落盘至 {Config.DB_DIR}/ 目录 ===") # 建议商用取消
 
+# batch_ingest.py 核心修改片段
+def ingest_single_file(file_path, force_overwrite=False):
+    """支持单文件入库与覆盖校验"""
+    file_md5 = get_file_md5(file_path)
+    
+    # 检查是否已存在
+    if not force_overwrite and is_duplicate(file_path):
+        return "EXISTS" # 返回状态供 UI 判断
+
+    # 执行解析
+    new_docs = parse_file_to_md(file_path)
+    if not new_docs:
+        return "FAILED"
+
+    # ... 执行向量化入库 (注意使用 FAISS.add_documents 而不是从头创建) ...
+    # 商业建议：如果是覆盖安装，需先根据 metadata 里的 source 删除旧向量，再 add 新向量
+    return "SUCCESS"
+
+
 if __name__ == "__main__":
     # 假设你的待入库文件都放在 data 文件夹下
     target_folder = "01_RAG\data" 
