@@ -1,104 +1,119 @@
 import streamlit as st
 import os
-from batch_ingest import batch_ingest_folder
+import json
+from config import Config
+from batch_ingest import ingest_single_file, delete_single_file, rebuild_index_from_md
 from query_service import build_query_chain
 
-st.set_page_config(page_title="企业级智能 RAG 助手", layout="wide")
-# 1. 显示已入库文件清单
+st.set_page_config(page_title="RAG 智库商用版", layout="wide")
+
 def get_ingested_files():
     if os.path.exists(Config.PROCESSED_RECORD_FILE):
         with open(Config.PROCESSED_RECORD_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
-ingested_data = get_ingested_files()
+# 辅助函数：强制重载知识库
+def reload_knowledge_base():
+    if "rag_chain" in st.session_state:
+        del st.session_state["rag_chain"]
 
+# --- 侧边栏：管理与清单 ---
 with st.sidebar:
-    st.header("📂 已入库文件清单")
+    st.title("📚 知识库中心")
+    
+    st.subheader("📂 已存文档")
+    ingested_data = get_ingested_files()
     if ingested_data:
-        for md5, path in ingested_data.items():
-            st.text(f"📄 {os.path.basename(path)}")
-    else:
-        st.info("暂无入库文件")
-
-# 2. 上传与覆盖逻辑
-uploaded_file = st.file_uploader("选择文件上传", type=['pdf', 'docx', 'jpg', 'png'])
-
-if uploaded_file:
-    file_name = uploaded_file.name
-    temp_path = os.path.join("01_RAG/data", file_name)
-    
-    # 模拟保存
-    with open(temp_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-
-    # 检查是否存在
-    is_exist = any(file_name in p for p in ingested_data.values())
-    
-    if is_exist:
-        st.warning(f"检测到文件 `{file_name}` 已存在。")
-        col1, col2 = st.columns(2)
-        if col1.button("覆盖导入"):
-            status = ingest_single_file(temp_path, force_overwrite=True)
-            st.success("覆盖成功！")
-        if col2.button("取消"):
-            st.info("操作已取消")
-    else:
-        if st.button("确认入库"):
-            with st.spinner("解析中..."):
-                status = ingest_single_file(temp_path)
-                st.success("入库成功！")
-
-# --- 侧边栏：管理知识库 ---
-with st.sidebar:
-    st.title("📚 知识库管理")
-    uploaded_files = st.file_uploader("上传新文件 (PDF/Docx/JPG)", accept_multiple_files=True)
-    
-    if st.button("🚀 开始同步入库"):
-        if uploaded_files:
-            # 保存到临时目录
-            save_path = "01_RAG/data"
-            os.makedirs(save_path, exist_ok=True)
-            for f in uploaded_files:
-                with open(os.path.join(save_path, f.name), "wb") as buffer:
-                    buffer.write(f.read())
+        for md5_key, path in ingested_data.items():
+            # 修复 1：去掉 caption，改用 columns 和 markdown 实现正常字体与删除按钮
+            col1, col2 = st.columns([4, 1])
+            col1.markdown(f"📄 **{os.path.basename(path)}**")
             
-            with st.spinner("正在解析、转换并构建索引..."):
-                batch_ingest_folder(save_path) # 调用你已有的入库逻辑
-            st.success("入库成功！")
-        else:
-            st.warning("请先选择文件")
+            # 修复 2：增加删除功能
+            if col2.button("❌", key=f"del_{md5_key}", help="删除此文档"):
+                with st.spinner("正在删除文档并极速重建索引..."):
+                    delete_single_file(md5_key)
+                    rebuild_index_from_md() # 重建底层库
+                    reload_knowledge_base() # 重置大模型连接
+                st.success("删除成功！")
+                st.rerun()
+    else:
+        st.info("暂无数据")
+    
+    st.divider()
 
-# --- 主界面：对话窗口 ---
-st.title("🤖 智能问答终端")
+    st.subheader("📤 上传并入库")
+    uploaded_file = st.file_uploader("选择文档", type=['pdf', 'docx', 'png', 'jpg'])
+    
+    if uploaded_file:
+        temp_dir = "01_RAG/data"
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_path = os.path.join(temp_dir, uploaded_file.name)
+        
+        with open(temp_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        is_exist = any(uploaded_file.name in p for p in ingested_data.values())
+        
+        if is_exist:
+            st.warning(f"文件 `{uploaded_file.name}` 已存在。")
+            if st.button("🔥 覆盖导入"):
+                with st.spinner("重构索引中..."):
+                    ingest_single_file(temp_path, force_overwrite=True)
+                    reload_knowledge_base() # 强制重载
+                st.success("覆盖完成！")
+                st.rerun()
+        else:
+            if st.button("✅ 确认入库"):
+                with st.spinner("解析并算向量中..."):
+                    ingest_single_file(temp_path)
+                    reload_knowledge_base() # 强制重载
+                st.success("入库成功！")
+                st.rerun()
+
+# --- 主界面：问答与引用高亮 ---
+st.title("🤖 智能对话终端")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 显示历史聊天记录
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# 初始化 RAG 链 (Session 缓存避免重复加载)
+# 初始化 RAG 链 (如果被 reload_knowledge_base 删除了，这里会重新建立连接)
 if "rag_chain" not in st.session_state:
     try:
-        st.session_state.rag_chain = build_query_chain() # 调用你已有的查询链
+        st.session_state.rag_chain = build_query_chain()
     except:
-        st.info("请先在左侧上传并入库文件以激活助手")
+        st.info("💡 请先在左侧入库文档以激活搜索。")
 
-# 聊天输入
-if prompt := st.chat_input("关于文档你想了解什么？"):
+# 显示历史
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        if "sources" in msg:
+            with st.expander("🔍 原始引用片段"):
+                for doc in msg["sources"]:
+                    st.caption(f"来源：{os.path.basename(doc.metadata.get('source', '未知'))}")
+                    st.code(doc.page_content, language="markdown")
+
+# 问答交互
+if prompt := st.chat_input("关于您的文档，想问点什么？"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
         if "rag_chain" in st.session_state:
-            with st.spinner("正在检索实时资料并思考..."):
-                # 执行 RAG 逻辑
-                response = st.session_state.rag_chain.invoke(prompt)
-                st.markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
+            with st.spinner("正在检索实时数据并推理..."):
+                retriever = st.session_state.rag_chain.first["context"]
+                source_docs = retriever.invoke(prompt)
+                
+                res = st.session_state.rag_chain.invoke(prompt)
+                st.markdown(res)
+                
+                st.session_state.messages.append({
+                    "role": "assistant", 
+                    "content": res, 
+                    "sources": source_docs
+                })
         else:
-            st.error("知识库未就绪，请先完成左侧入库步骤。")
+            st.error("知识库未就绪。")
