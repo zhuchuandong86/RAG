@@ -7,6 +7,17 @@ from query_service import build_query_chain
 
 st.set_page_config(page_title="RAG 智库商用版", layout="wide")
 
+# 🚨 核心修复 1：使用官方缓存机制，防止重复加载和双重打印
+@st.cache_resource
+def get_rag_chain():
+    try:
+        return build_query_chain()
+    except Exception as e:
+        return None
+
+# 获取模型链实例
+rag_chain = get_rag_chain()
+
 def get_ingested_files():
     if os.path.exists(Config.PROCESSED_RECORD_FILE):
         with open(Config.PROCESSED_RECORD_FILE, "r", encoding="utf-8") as f:
@@ -47,7 +58,7 @@ with st.sidebar:
     uploaded_file = st.file_uploader("选择文档", type=['pdf', 'docx', 'png', 'jpg'])
     
     if uploaded_file:
-        temp_dir = "01_RAG/data"
+        temp_dir = "data"
         os.makedirs(temp_dir, exist_ok=True)
         temp_path = os.path.join(temp_dir, uploaded_file.name)
         
@@ -60,16 +71,22 @@ with st.sidebar:
             st.warning(f"文件 `{uploaded_file.name}` 已存在。")
             if st.button("🔥 覆盖导入"):
                 with st.spinner("重构索引中..."):
-                    ingest_single_file(temp_path, force_overwrite=True)
-                    reload_knowledge_base() # 强制重载
-                st.success("覆盖完成！")
+                    status = ingest_single_file(temp_path, force_overwrite=True)
+                    if status == "SUCCESS":
+                        reload_knowledge_base()
+                        st.success("覆盖完成！")
+                    else:
+                        st.error("解析失败：文件可能损坏或内容无法提取。")
                 st.rerun()
         else:
             if st.button("✅ 确认入库"):
                 with st.spinner("解析并算向量中..."):
-                    ingest_single_file(temp_path)
-                    reload_knowledge_base() # 强制重载
-                st.success("入库成功！")
+                    status = ingest_single_file(temp_path)
+                    if status == "SUCCESS":
+                        reload_knowledge_base()
+                        st.success("入库成功！")
+                    else:
+                        st.error("解析失败：文件未入库，请检查文件完整性。")
                 st.rerun()
 
 # --- 主界面：问答与引用高亮 ---
@@ -102,12 +119,12 @@ if prompt := st.chat_input("关于您的文档，想问点什么？"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        if "rag_chain" in st.session_state:
+        if rag_chain is not None:  # 改为直接判断对象是否存在
             with st.spinner("正在检索实时数据并推理..."):
-                retriever = st.session_state.rag_chain.first["context"]
+                retriever = rag_chain.first["context"]
                 source_docs = retriever.invoke(prompt)
                 
-                res = st.session_state.rag_chain.invoke(prompt)
+                res = rag_chain.invoke(prompt)
                 st.markdown(res)
                 
                 st.session_state.messages.append({
@@ -116,4 +133,4 @@ if prompt := st.chat_input("关于您的文档，想问点什么？"):
                     "sources": source_docs
                 })
         else:
-            st.error("知识库未就绪。")
+            st.error("知识库未就绪。请上传文件。")
