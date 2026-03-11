@@ -50,6 +50,7 @@ def parse_file_to_md(file_path):
                 has_tables = len(page.find_tables().tables) > 0
                 has_images = len(page.get_images()) > 0
                 
+                # 区分情况：有表/图或字数少于50调用VLM，否则普通解析
                 if has_tables or has_images or len(page.get_text().strip()) < 50:
                     pix = page.get_pixmap(dpi=150)
                     tmp = f"temp_{i}.jpg"
@@ -60,6 +61,7 @@ def parse_file_to_md(file_path):
                     t = text_to_md(page.get_text())
                 
                 full_md_content += f"## 第 {i+1} 页\n{t}\n\n"
+                # 记录第几页 metadata
                 docs.append(Document(page_content=t, metadata={"source": file_path, "title": base_name, "page": i+1}))
             pdf.close()
             
@@ -67,13 +69,25 @@ def parse_file_to_md(file_path):
             d = DocxDocument(file_path)
             t = text_to_md("\n".join([p.text for p in d.paragraphs]))
             full_md_content += t
-            docs.append(Document(page_content=t, metadata={"source": file_path}))
+            docs.append(Document(page_content=t, metadata={"source": file_path, "title": base_name, "page": 1}))
+            
+        elif ext in ['.txt', '.md']: # 新增文本直接入库
+            with open(file_path, "r", encoding="utf-8") as f:
+                t = text_to_md(f.read())
+            full_md_content += t
+            docs.append(Document(page_content=t, metadata={"source": file_path, "title": base_name, "page": 1}))
+            
+        elif ext in ['.png', '.jpg', '.jpeg']: # 新增纯图片直接调VLM
+            t = image_to_md_via_vlm(file_path)
+            full_md_content += f"## 图片解析\n{t}\n\n"
+            docs.append(Document(page_content=t, metadata={"source": file_path, "title": base_name, "page": 1}))
             
     except Exception as e:
         print(f"解析异常: {e}")
-        return [] # 解析失败，直接返回空列表
+        return []
 
-    debug_dir = os.path.join( "data", "debug_md")
+    # 修复目录路径以与 batch_ingest 保持一致
+    debug_dir = os.path.join("01_RAG", "data", "debug_md") 
     os.makedirs(debug_dir, exist_ok=True)
     with open(os.path.join(debug_dir, f"{base_name}.md"), "w", encoding="utf-8") as f:
         f.write(full_md_content)
